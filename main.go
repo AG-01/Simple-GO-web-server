@@ -4,40 +4,61 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"time"
+
+	"github.com/go-chi/chi"
+	"github.com/go-chi/cors"
+	"github.com/joho/godotenv"
+	"github.com/kalai-senthil/go-web-server/internal/database"
 )
 
-func formHandler(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		fmt.Fprintf(w, "ParseForm() err: %v", err)
-		return
-	}
-	fmt.Fprintf(w, "POST request successful")
-	name := r.FormValue("name")
-	address := r.FormValue("address")
-	fmt.Fprintf(w, "Name = %s\n", name)
-	fmt.Fprintf(w, "Address = %s\n", address)
-}
-
-func helloHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/hello" {
-		http.Error(w, "404 not found", http.StatusNotFound)
-		return
-	}
-	if r.Method != "GET" {
-		http.Error(w, "method is not supported", http.StatusNotFound)
-		return
-	}
-	fmt.Fprintf(w, "hello!")
+type DbApi struct {
+	queries *database.Queries
 }
 
 func main() {
-	fileServer := http.FileServer(http.Dir("./static"))
-	http.Handle("/", fileServer)
-	http.HandleFunc("/form", formHandler)
-	http.HandleFunc("/hello", helloHandler)
-
-	fmt.Printf("Starting server at port 8080\n")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	godotenv.Load()
+	PORT := os.Getenv("PORT")
+	if PORT == "" {
+		log.Fatal("Specify port")
+		return
+	}
+	dbConnection, err := connectToDB()
+	if err != nil {
+		log.Fatal("Not able to connect to database")
+	}
+	queries := database.New(dbConnection)
+	db := DbApi{
+		queries: queries,
+	}
+	go startScaraping(queries, 10, time.Minute)
+	router := chi.NewRouter()
+	router.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"https://*", "http://*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"*"},
+		AllowCredentials: false,
+		MaxAge:           300,
+		ExposedHeaders:   []string{"Link"},
+	}))
+	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		respondWithJSON(w, 200, struct{}{})
+	})
+	router.Post("/users", db.createUserHandler)
+	router.Get("/feeds", db.getFeedsHandler)
+	router.Post("/feeds", db.createFeedHandler)
+	router.Post("/user", db.getUserHandler)
+	router.Post("/feed/follow", db.feedFollowHandler)
+	router.Delete("/feed/unfollow/{feedFollowId}", db.feedUnFollowHandler)
+	router.Get("/feeds/follow", db.feedFollowHandler)
+	router.Get("/posts", db.getPostsForUserHadler)
+	server := &http.Server{
+		Handler: router,
+		Addr:    fmt.Sprintf(": %s", PORT),
+	}
+	log.Printf("Server Running on PORT: %s", PORT)
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
